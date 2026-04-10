@@ -1,0 +1,62 @@
+name: Weekly Allociné Scraper
+
+on:
+  # Run every Monday at 09:00 UTC
+  schedule:
+    - cron: "0 9 * * 1"
+
+  # Allow on-demand manual runs from the Actions tab
+  workflow_dispatch:
+    inputs:
+      min_press_rating:
+        description: "Minimum press rating (out of 5)"
+        required: false
+        default: "4.0"
+      max_pages:
+        description: "Maximum pages to scrape"
+        required: false
+        default: "15"
+      sheet_name:
+        description: "Google Sheets tab name"
+        required: false
+        default: "Films Allociné"
+
+concurrency:
+  group: allocine-scraper
+  cancel-in-progress: false   # Never cancel a running scrape
+
+jobs:
+  scrape-and-update:
+    name: Scrape Allociné → Google Sheets
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+          SHEET_NAME: ${{ inputs.sheet_name || vars.SHEET_NAME || 'Films Allociné' }}
+          MIN_PRESS_RATING: ${{ inputs.min_press_rating || vars.MIN_PRESS_RATING || '4.0' }}
+          MAX_PAGES: ${{ inputs.max_pages || vars.MAX_PAGES || '15' }}
+        run: python main.py
+
+      - name: Upload run log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-log-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
