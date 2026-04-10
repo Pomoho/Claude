@@ -80,8 +80,14 @@ client.on('disconnected', (reason) => {
 });
 
 // ── Gestionnaire de messages ─────────────────────────────────────────────────
+// On utilise 'message_create' (et non 'message') car 'message' ne se déclenche
+// que pour les premières conversations dans les nouvelles versions de WhatsApp.
+// 'message_create' capture tous les messages, y compris les conversations actives.
 
-client.on('message', async (message) => {
+client.on('message_create', async (message) => {
+  // Ignorer les messages envoyés par le bot lui-même
+  if (message.fromMe) return;
+
   // Ignorer les messages non-texte (images, audio, vidéo, etc.)
   if (message.type !== MessageTypes.TEXT) return;
 
@@ -141,11 +147,15 @@ client.on('message', async (message) => {
   const timestamp = new Date().toLocaleTimeString('fr-FR');
   console.log(`📨 [${timestamp}] ${contactId}: ${preview}`);
 
+  // Indicateur de frappe — séparé pour ne pas bloquer la réponse si ça échoue
   try {
-    // Indicateur de frappe
     const chat = await message.getChat();
     await chat.sendStateTyping();
+  } catch (_) {
+    // L'indicateur de frappe est optionnel, on continue quoi qu'il arrive
+  }
 
+  try {
     const reply = await agent.respond(contactId, text);
     await message.reply(reply);
 
@@ -153,7 +163,6 @@ client.on('message', async (message) => {
   } catch (err) {
     console.error(`❌ Erreur pour ${contactId}:`, err.message);
 
-    // Message d'erreur convivial
     const errorMsg = err.status === 401
       ? '⚠️ Clé API invalide. Vérifiez votre configuration.'
       : '⚠️ Une erreur s\'est produite. Veuillez réessayer dans un moment.';
