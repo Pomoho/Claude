@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /rgpd.html
+
+Sitemap: https://www.renoserrure.fr/sitemap.xml
