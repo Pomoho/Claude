@@ -7,11 +7,10 @@ import {
   Legend, ResponsiveContainer,
 } from 'recharts';
 import { Card, Badge, ScoreBar, FactorRow } from '@/components/ui';
-import { scoreBuyVsRent, scoreNewVsOld, scoreCities, simulateFinancial, loanCapacity, monthlyPayment } from '@/lib/scoring';
+import { scoreBuyVsRent, scoreNewVsOld, scoreCities, simulateFinancial, loanCapacity, monthlyPayment, calcPTZ } from '@/lib/scoring';
 import type { UserProfile, ScoredCity } from '@/lib/types';
-import { IDF_CITIES } from '@/lib/data/idf-cities';
 
-const fmt = (v: number) => new Intl.NumberFormat('fr-FR').format(Math.round(v));
+const fmt  = (v: number) => new Intl.NumberFormat('fr-FR').format(Math.round(v));
 const fmtE = (v: number) => `${fmt(v)} €`;
 
 const PLATFORMS = [
@@ -34,14 +33,35 @@ const PLATFORMS = [
   },
 ];
 
-const defaults: UserProfile = {
-  age: 32, familySituation: 'single', profession: 'cdi_private',
-  monthlyIncome: 4000, downPayment: 30000, projectType: 'primary',
-  holdingPeriod: 10, riskTolerance: 'medium', budget: 300000,
-  propertyType: 'apartment', desiredSurface: 55, currentCity: 'Paris',
-  maxCommute: 40, loanRate: 3.6, loanDuration: 25,
+const MOVING_REASON_LABELS: Record<string, string> = {
+  budget: 'Loyer trop élevé', space: 'Surface insuffisante', location: 'Quartier',
+  quality: 'Qualité / DPE', family: 'Évolution familiale', wealth: 'Patrimoine',
+  investment: 'Investissement', other: 'Autre',
 };
 
+const TRANSPORT_LABELS: Record<string, string> = {
+  metro: '🚇 Transports', bike: '🚲 Vélo', car: '🚗 Voiture', mixed: '🔄 Mixte',
+};
+
+const PTZ_ZONE_SHORT: Record<string, string> = {
+  A_bis: 'A bis', A: 'A', B1: 'B1', B2: 'B2', C: 'C',
+};
+
+// Fallback profile that matches the updated UserProfile shape
+const FALLBACK: UserProfile = {
+  age: 32, familySituation: 'single', profession: 'cdi_private',
+  monthlyIncome: 4000, downPayment: 30000,
+  housingStatus: 'tenant', currentSurface: 40, currentRent: 1200, currentCharges: 150,
+  ownerCopropriete: 2400, ownerTaxeFonciere: 900,
+  currentLocation: 'Paris', movingReasons: ['wealth'],
+  workDistance: 5, workTransport: 'metro',
+  rfr: 30000, ptzZone: 'B1',
+  projectType: 'primary', holdingPeriod: 10, riskTolerance: 'medium',
+  budget: 300000, propertyType: 'apartment', desiredSurface: 55, maxCommute: 40,
+  loanRate: 3.6, loanDuration: 25,
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 function ScoreCard({ title, score, label, badge, badgeColor, children }: {
   title: string; score: number; label: string;
   badge: string; badgeColor: 'green' | 'amber' | 'slate' | 'blue' | 'violet' | 'red';
@@ -54,10 +74,8 @@ function ScoreCard({ title, score, label, badge, badgeColor, children }: {
         <Badge color={badgeColor}>{badge}</Badge>
       </div>
       <div className="mb-3">
-        <div className="flex justify-between items-baseline mb-2">
-          <span className="text-3xl font-black text-slate-900">{score}<span className="text-lg font-normal text-slate-400">/100</span></span>
-        </div>
-        <ScoreBar score={score} />
+        <span className="text-3xl font-black text-slate-900">{score}<span className="text-lg font-normal text-slate-400">/100</span></span>
+        <div className="mt-2"><ScoreBar score={score} /></div>
       </div>
       <p className="text-sm font-semibold text-slate-700 mb-4">{label}</p>
       {children}
@@ -65,35 +83,71 @@ function ScoreCard({ title, score, label, badge, badgeColor, children }: {
   );
 }
 
+function PTZPanel({ profile }: { profile: UserProfile }) {
+  const ptz = calcPTZ(profile, profile.budget);
+  if (profile.housingStatus !== 'tenant') return null;
+
+  return (
+    <Card className="mb-8">
+      <div className="flex items-start justify-between mb-4">
+        <h3 className="font-bold text-slate-900">Prêt à Taux Zéro 2026</h3>
+        <Badge color={ptz.eligible ? 'green' : 'slate'}>{ptz.eligible ? 'Éligible' : 'Non éligible'}</Badge>
+      </div>
+      {ptz.eligible ? (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            {[
+              { label: 'Montant PTZ',   value: fmtE(Math.round(ptz.montant ?? 0)) },
+              { label: 'Quotité',       value: `${Math.round((ptz.quotite ?? 0) * 100)} %` },
+              { label: 'Différé',       value: `${ptz.differe} ans` },
+              { label: 'Durée totale',  value: `${ptz.duree} ans` },
+            ].map(m => (
+              <div key={m.label} className="bg-green-50 rounded-xl p-3 text-center">
+                <p className="text-xs text-green-600 font-semibold uppercase mb-1">{m.label}</p>
+                <p className="font-black text-green-900">{m.value}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500">
+            Tranche {ptz.tranche} · Zone {PTZ_ZONE_SHORT[profile.ptzZone]} · Revenu retenu : {fmt(Math.round(ptz.revenuRetenu ?? 0))} €.
+            {ptz.differe && ptz.differe > 0
+              ? ` 0 €/mois pendant ${ptz.differe} ans, puis ${fmtE(Math.round(ptz.mensualite ?? 0))}/mois sur ${ptz.dureeRemboursement} ans.`
+              : ` Remboursement immédiat : ${fmtE(Math.round(ptz.mensualite ?? 0))}/mois sur ${ptz.dureeRemboursement} ans.`}
+          </p>
+        </>
+      ) : (
+        <p className="text-sm text-slate-500">{ptz.reason}</p>
+      )}
+    </Card>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [alerts, setAlerts] = useState<Array<{ id: string; title: string; platform: string; url: string; city: string }>>([]);
-  const [showAlertForm, setShowAlertForm] = useState(false);
-  const [alertCity, setAlertCity] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
   const [expandedFactors, setExpandedFactors] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    // Load profile from localStorage (set during onboarding)
     const stored = localStorage.getItem('immo_profile');
     if (stored) {
-      try { setProfile(JSON.parse(stored)); } catch { setProfile(defaults); }
+      try { setProfile(JSON.parse(stored)); } catch { setProfile(FALLBACK); }
     } else {
-      setProfile(defaults);
+      setProfile(FALLBACK);
     }
-    // Load alerts
     fetch('/api/alerts').then(r => r.json()).then(d => { if (d.alerts) setAlerts(d.alerts); }).catch(() => {});
   }, []);
 
-  const buyRent = useMemo(() => profile ? scoreBuyVsRent(profile) : null, [profile]);
-  const newOld = useMemo(() => profile ? scoreNewVsOld(profile) : null, [profile]);
-  const cities = useMemo(() => profile ? scoreCities(profile) : [], [profile]);
-  const topCity = cities[0] ?? null;
+  const buyRent     = useMemo(() => profile ? scoreBuyVsRent(profile) : null, [profile]);
+  const newOld      = useMemo(() => profile ? scoreNewVsOld(profile) : null, [profile]);
+  const cities      = useMemo(() => profile ? scoreCities(profile) : [],      [profile]);
+  const topCity     = cities[0] ?? null;
   const financialData = useMemo(() => profile ? simulateFinancial(profile, topCity) : [], [profile, topCity]);
 
   const capacity = profile ? loanCapacity(profile.monthlyIncome, profile.loanRate / 100, profile.loanDuration) : 0;
-  const monthly = profile ? monthlyPayment(Math.max(0, profile.budget - profile.downPayment), profile.loanRate / 100, profile.loanDuration) : 0;
+  const monthly  = profile ? monthlyPayment(Math.max(0, profile.budget - profile.downPayment), profile.loanRate / 100, profile.loanDuration) : 0;
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -101,17 +155,14 @@ export default function DashboardPage() {
     router.push('/');
   }
 
-  async function saveAlert(city: ScoredCity | null, platform: typeof PLATFORMS[0]) {
+  async function saveAlert(city: ScoredCity, platform: typeof PLATFORMS[0]) {
     if (!profile) return;
-    const targetCity = city ?? topCity;
-    if (!targetCity) return;
     setSavingAlert(true);
-    const url = platform.buildUrl(targetCity.name, profile.budget, profile.desiredSurface, profile.propertyType);
-    const title = `${targetCity.name} — ${platform.label}`;
+    const url = platform.buildUrl(city.name, profile.budget, profile.desiredSurface, profile.propertyType);
     const res = await fetch('/api/alerts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, platform: platform.id, url, city: targetCity.name, budget: profile.budget, surface: profile.desiredSurface, type: profile.propertyType }),
+      body: JSON.stringify({ title: `${city.name} — ${platform.label}`, platform: platform.id, url, city: city.name, budget: profile.budget, surface: profile.desiredSurface, type: profile.propertyType }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -120,10 +171,17 @@ export default function DashboardPage() {
     setSavingAlert(false);
   }
 
+  async function deleteAlert(id: string) {
+    await fetch('/api/alerts', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    setAlerts(a => a.filter(x => x.id !== id));
+  }
+
   if (!profile) {
     return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full" /></div>;
   }
 
+  const isTenant = profile.housingStatus === 'tenant';
+  const currentTotalRent = isTenant ? profile.currentRent + profile.currentCharges : 0;
   const buyBadge = (s: number) => s >= 65 ? 'green' : s >= 45 ? 'amber' : 'red';
   const newBadge = (s: number) => s >= 65 ? 'blue' : s >= 45 ? 'amber' : 'violet';
 
@@ -144,13 +202,99 @@ export default function DashboardPage() {
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-8">
-        {/* Key metrics strip */}
+
+        {/* ── Housing situation summary ─────────────────────────────────── */}
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 mb-8">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <span className="text-2xl">{isTenant ? '🔑' : '🏠'}</span>
+            <div>
+              <p className="font-bold text-slate-900">
+                {isTenant ? 'Locataire' : 'Propriétaire occupant'} · {profile.currentLocation}
+              </p>
+              <p className="text-xs text-slate-500">
+                {profile.currentSurface} m² actuel → {profile.desiredSurface} m² souhaité
+                {profile.desiredSurface > profile.currentSurface
+                  ? ` (+${profile.desiredSurface - profile.currentSurface} m²)`
+                  : profile.desiredSurface < profile.currentSurface
+                  ? ` (−${profile.currentSurface - profile.desiredSurface} m²)`
+                  : ' (surface identique)'}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {isTenant ? (
+              <>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Loyer actuel HC</p>
+                  <p className="font-bold text-slate-900">{fmtE(profile.currentRent)}/mois</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Charges mensuelles</p>
+                  <p className="font-bold text-slate-900">{fmtE(profile.currentCharges)}/mois</p>
+                </div>
+                <div className={`rounded-xl p-3 ${monthly > currentTotalRent ? 'bg-amber-50' : 'bg-green-50'}`}>
+                  <p className={`text-xs font-medium mb-0.5 ${monthly > currentTotalRent ? 'text-amber-600' : 'text-green-600'}`}>
+                    Coût logement total
+                  </p>
+                  <p className={`font-bold ${monthly > currentTotalRent ? 'text-amber-900' : 'text-green-900'}`}>
+                    {fmtE(currentTotalRent)}/mois
+                  </p>
+                  <p className="text-xs opacity-70 mt-0.5">
+                    {monthly > currentTotalRent
+                      ? `+${fmtE(Math.round(monthly - currentTotalRent))} vs mensualité`
+                      : `−${fmtE(Math.round(currentTotalRent - monthly))} vs mensualité`}
+                  </p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Transport travail</p>
+                  <p className="font-bold text-slate-900">{TRANSPORT_LABELS[profile.workTransport]}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{profile.workDistance} km</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Charges copropriété</p>
+                  <p className="font-bold text-slate-900">{fmtE(profile.ownerCopropriete)}/an</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Taxe foncière</p>
+                  <p className="font-bold text-slate-900">{fmtE(profile.ownerTaxeFonciere)}/an</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Charges totales</p>
+                  <p className="font-bold text-slate-900">{fmtE(profile.ownerCopropriete + profile.ownerTaxeFonciere)}/an</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3">
+                  <p className="text-xs text-slate-500 font-medium mb-0.5">Transport travail</p>
+                  <p className="font-bold text-slate-900">{TRANSPORT_LABELS[profile.workTransport]}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{profile.workDistance} km</p>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Moving reasons */}
+          {profile.movingReasons.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-1.5">
+              <span className="text-xs text-slate-400 mr-1">Motivations :</span>
+              {profile.movingReasons.map(r => (
+                <span key={r} className="text-xs bg-brand-50 text-brand-700 px-2.5 py-0.5 rounded-full font-medium">
+                  {MOVING_REASON_LABELS[r] ?? r}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Key metrics ──────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           {[
-            { label: 'Capacité d\'emprunt', value: fmtE(capacity), sub: 'à 35 % d\'effort' },
-            { label: 'Budget total', value: fmtE(profile.budget), sub: `Apport : ${fmtE(profile.downPayment)}` },
-            { label: 'Mensualité estimée', value: `${fmt(monthly)} €/mois`, sub: `${profile.loanRate} % sur ${profile.loanDuration} ans` },
-            { label: 'Horizon détention', value: `${profile.holdingPeriod} ans`, sub: profile.projectType === 'investment' ? 'Investissement' : 'Résidence principale' },
+            { label: "Capacité d'emprunt",  value: fmtE(capacity),           sub: 'à 35 % d\'effort (HCSF)' },
+            { label: 'Budget total',         value: fmtE(profile.budget),     sub: `Apport : ${fmtE(profile.downPayment)}` },
+            { label: 'Mensualité estimée',   value: `${fmt(monthly)} €/mois`, sub: `${profile.loanRate} % · ${profile.loanDuration} ans` },
+            { label: 'Horizon détention',    value: `${profile.holdingPeriod} ans`, sub: profile.projectType === 'investment' ? 'Investissement' : 'Résidence principale' },
           ].map(m => (
             <Card key={m.label} className="text-center">
               <p className="text-xs text-slate-500 uppercase font-semibold mb-1">{m.label}</p>
@@ -160,9 +304,13 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Recommendations */}
+        {/* ── PTZ panel (tenants only) ──────────────────────────────────── */}
+        {isTenant && <PTZPanel profile={profile} />}
+
+        {/* ── Recommendations ──────────────────────────────────────────── */}
         <h2 className="text-lg font-bold text-slate-900 mb-4">Recommandations personnalisées</h2>
         <div className="grid md:grid-cols-2 gap-6 mb-8">
+
           {buyRent && (
             <ScoreCard
               title="Acheter ou Louer ?"
@@ -173,25 +321,31 @@ export default function DashboardPage() {
             >
               <button onClick={() => setExpandedFactors(e => ({ ...e, buyRent: !e.buyRent }))}
                 className="text-xs text-brand-600 hover:text-brand-700 font-medium mb-2">
-                {expandedFactors.buyRent ? '▲ Masquer' : '▼ Voir les facteurs'}
+                {expandedFactors.buyRent ? '▲ Masquer les facteurs' : '▼ Voir les facteurs'}
               </button>
               {expandedFactors.buyRent && (
-                <div className="mt-2">
+                <div className="mt-2 mb-3">
                   {buyRent.factors.map(f => <FactorRow key={f.label} {...f} />)}
                 </div>
               )}
-              <div className="mt-3 grid grid-cols-2 gap-2 text-center">
-                <div className="bg-slate-50 rounded-lg p-2">
-                  <p className="text-xs text-slate-500">Mensualité achat</p>
-                  <p className="font-bold text-sm">{fmtE(buyRent.estimatedMonthlyPayment)}/mois</p>
+              <div className="grid grid-cols-2 gap-2 text-center mt-3">
+                <div className="bg-brand-50 rounded-lg p-2.5">
+                  <p className="text-xs text-brand-600 font-medium">Mensualité achat</p>
+                  <p className="font-bold text-brand-900">{fmtE(buyRent.estimatedMonthlyPayment)}/mois</p>
                 </div>
-                <div className="bg-slate-50 rounded-lg p-2">
-                  <p className="text-xs text-slate-500">Loyer équivalent</p>
-                  <p className="font-bold text-sm">{fmtE(buyRent.estimatedMonthlyRent)}/mois</p>
+                <div className={`rounded-lg p-2.5 ${buyRent.rentIsActual ? 'bg-green-50' : 'bg-slate-50'}`}>
+                  <p className={`text-xs font-medium ${buyRent.rentIsActual ? 'text-green-600' : 'text-slate-500'}`}>
+                    {buyRent.rentIsActual ? 'Votre loyer réel CC' : 'Loyer estimé'}
+                  </p>
+                  <p className={`font-bold ${buyRent.rentIsActual ? 'text-green-900' : 'text-slate-700'}`}>
+                    {fmtE(buyRent.estimatedMonthlyRent)}/mois
+                  </p>
+                  {buyRent.rentIsActual && <p className="text-xs text-green-600 mt-0.5">✓ Chiffre réel</p>}
                 </div>
               </div>
             </ScoreCard>
           )}
+
           {newOld && (
             <ScoreCard
               title="Neuf ou Ancien ?"
@@ -202,7 +356,7 @@ export default function DashboardPage() {
             >
               <button onClick={() => setExpandedFactors(e => ({ ...e, newOld: !e.newOld }))}
                 className="text-xs text-brand-600 hover:text-brand-700 font-medium">
-                {expandedFactors.newOld ? '▲ Masquer' : '▼ Voir les facteurs'}
+                {expandedFactors.newOld ? '▲ Masquer les facteurs' : '▼ Voir les facteurs'}
               </button>
               {expandedFactors.newOld && (
                 <div className="mt-2">
@@ -213,7 +367,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* City recommendations */}
+        {/* ── City recommendations ──────────────────────────────────────── */}
         <h2 className="text-lg font-bold text-slate-900 mb-4">Top 5 villes recommandées</h2>
         <Card padding={false} className="mb-8 overflow-hidden">
           <div className="overflow-x-auto">
@@ -234,12 +388,13 @@ export default function DashboardPage() {
                   <tr key={city.id} className={`border-b border-slate-100 hover:bg-slate-50 ${idx === 0 ? 'bg-brand-50/30' : ''}`}>
                     <td className="px-5 py-4">
                       <div className="flex items-center gap-3">
-                        <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${idx === 0 ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-600'}`}>{idx + 1}</span>
+                        <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${idx === 0 ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-600'}`}>{idx + 1}</span>
                         <div>
                           <p className="font-semibold text-slate-900">{city.name}</p>
                           <div className="flex gap-1 mt-0.5 flex-wrap">
-                            {city.hasRER && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">RER</span>}
+                            {city.hasRER   && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">RER</span>}
                             {city.hasMetro && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Métro</span>}
+                            {city.hasTram  && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Tram</span>}
                           </div>
                         </div>
                       </div>
@@ -263,20 +418,26 @@ export default function DashboardPage() {
                       </span>
                     </td>
                     <td className="px-4 py-4">
-                      <button onClick={() => { setAlertCity(city.id); setShowAlertForm(true); }}
-                        className="text-xs px-3 py-1.5 rounded-lg bg-brand-50 text-brand-600 hover:bg-brand-100 font-medium transition">
-                        + Alerte
-                      </button>
+                      <div className="flex gap-1.5">
+                        {PLATFORMS.slice(0, 2).map(p => (
+                          <a key={p.id}
+                            href={p.buildUrl(city.name, profile.budget, profile.desiredSurface, profile.propertyType)}
+                            target="_blank" rel="noopener noreferrer"
+                            onClick={() => saveAlert(city, p)}
+                            className={`px-2 py-1 rounded-md text-xs font-semibold text-white ${p.color} hover:opacity-80 transition`}>
+                            {p.icon}
+                          </a>
+                        ))}
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {/* Pros/Cons for top city */}
           {topCity && (
             <div className="px-5 py-4 bg-slate-50 border-t border-slate-200">
-              <p className="text-xs font-semibold text-slate-600 uppercase mb-2">Analyse — {topCity.name}</p>
+              <p className="text-xs font-semibold text-slate-600 uppercase mb-2">Analyse détaillée — {topCity.name}</p>
               <div className="grid md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-green-600 font-semibold mb-1">✓ Points forts</p>
@@ -291,8 +452,15 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        {/* Financial chart */}
-        <h2 className="text-lg font-bold text-slate-900 mb-4">Simulation financière sur {profile.holdingPeriod} ans</h2>
+        {/* ── Financial simulation ──────────────────────────────────────── */}
+        <h2 className="text-lg font-bold text-slate-900 mb-4">
+          Simulation financière sur {profile.holdingPeriod} ans
+        </h2>
+        {isTenant && (
+          <p className="text-xs text-green-700 bg-green-50 rounded-lg px-3 py-2 mb-4 border border-green-200">
+            ✓ La courbe "Location" utilise votre <strong>loyer réel ({fmtE(currentTotalRent)}/mois)</strong> indexé à 2 %/an — pas une estimation.
+          </p>
+        )}
         <div className="grid md:grid-cols-2 gap-6 mb-8">
           <Card>
             <h3 className="font-semibold text-slate-800 mb-4 text-sm">Coût cumulé : achat vs location</h3>
@@ -301,10 +469,10 @@ export default function DashboardPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="year" label={{ value: 'Années', position: 'insideBottom', offset: -2, fontSize: 10 }} tick={{ fontSize: 10 }} />
                 <YAxis tickFormatter={v => `${Math.round(v / 1000)}k`} tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v: number) => fmtE(v)} labelFormatter={(l) => `Année ${l}`} />
+                <Tooltip formatter={(v: number) => fmtE(v)} labelFormatter={l => `Année ${l}`} />
                 <Legend verticalAlign="top" iconSize={10} wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="buyCumCost" name="Coût achat" stroke="#0ea5e9" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="rentCumCost" name="Coût location" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="rentCumCost" name={isTenant ? 'Location (loyer réel)' : 'Location (estimé)'} stroke="#f59e0b" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </Card>
@@ -315,28 +483,32 @@ export default function DashboardPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="year" tick={{ fontSize: 10 }} />
                 <YAxis tickFormatter={v => `${Math.round(v / 1000)}k`} tick={{ fontSize: 10 }} />
-                <Tooltip formatter={(v: number) => fmtE(v)} labelFormatter={(l) => `Année ${l}`} />
+                <Tooltip formatter={(v: number) => fmtE(v)} labelFormatter={l => `Année ${l}`} />
                 <Legend verticalAlign="top" iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="propertyValue" name="Valeur du bien" fill="#0ea5e9" radius={[3, 3, 0, 0]} />
-                <Bar dataKey="netWealthBuy" name="Patrimoine net" fill="#10b981" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="propertyValue" name="Valeur du bien"  fill="#0ea5e9" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="netWealthBuy"  name="Patrimoine net"  fill="#10b981" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Card>
         </div>
 
-        {/* Alerts */}
+        {/* ── Alerts ───────────────────────────────────────────────────── */}
         <h2 className="text-lg font-bold text-slate-900 mb-4">Alertes immobilières</h2>
         <Card className="mb-8">
-          <p className="text-sm text-slate-600 mb-4">Générez des alertes de recherche filtrées sur les grandes plateformes.</p>
-          {/* Quick create for top 5 cities */}
+          <p className="text-sm text-slate-600 mb-4">
+            Cliquez sur une plateforme pour ouvrir la recherche filtrée et l'enregistrer.
+          </p>
           <div className="space-y-3 mb-6">
-            {cities.slice(0, 3).map(city => (
-              <div key={city.id} className="flex items-center justify-between gap-4 p-3 rounded-xl bg-slate-50 border border-slate-200">
-                <div>
-                  <p className="text-sm font-semibold text-slate-800">{city.name}</p>
-                  <p className="text-xs text-slate-500">{fmtE(profile.budget)} · {profile.desiredSurface} m² min</p>
+            {cities.map(city => (
+              <div key={city.id} className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                    <span className="text-xs bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded font-medium">{city.totalScore}/100</span>
+                    {city.name}
+                  </p>
+                  <p className="text-xs text-slate-500">{fmtE(profile.budget)} max · {profile.desiredSurface} m² min · {fmt(city.pricePerSqm)} €/m²</p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 shrink-0">
                   {PLATFORMS.map(p => (
                     <a key={p.id}
                       href={p.buildUrl(city.name, profile.budget, profile.desiredSurface, profile.propertyType)}
@@ -350,21 +522,21 @@ export default function DashboardPage() {
               </div>
             ))}
           </div>
-          {/* Saved alerts */}
           {alerts.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Alertes sauvegardées</p>
+              <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Alertes sauvegardées ({alerts.length})</p>
               <div className="space-y-2">
                 {alerts.map(alert => (
-                  <div key={alert.id} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-100">
+                  <div key={alert.id} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-100 hover:bg-slate-50">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium">{alert.platform}</span>
+                      <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium shrink-0">{alert.platform}</span>
                       <span className="text-sm text-slate-700 truncate">{alert.title}</span>
                     </div>
-                    <a href={alert.url} target="_blank" rel="noopener noreferrer"
-                      className="text-xs text-brand-600 hover:text-brand-700 font-medium shrink-0">
-                      Ouvrir →
-                    </a>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <a href={alert.url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-brand-600 hover:text-brand-700 font-medium">Ouvrir →</a>
+                      <button onClick={() => deleteAlert(alert.id)} className="text-xs text-slate-400 hover:text-red-500 transition">✕</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -372,15 +544,16 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        {/* Methodology note */}
+        {/* ── Methodology ──────────────────────────────────────────────── */}
         <Card className="bg-slate-50 border-slate-200">
-          <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Méthodologie</p>
+          <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Méthodologie & hypothèses</p>
           <ul className="text-xs text-slate-500 space-y-1 list-disc list-inside">
-            <li>Scoring acheter/louer : horizon, stabilité, taux, apport, ratio mensualité/loyer.</li>
-            <li>Scoring neuf/ancien : budget/m², objectif, tolérance travaux, surface, horizon énergétique.</li>
-            <li>Scoring villes : budget (35 %), investissement (20 %), transports (20 %), qualité de vie (15 %), tension marché (10 %).</li>
-            <li>Prix IDF : données simulées indicatives 2024-2025 · Taux d'effort max : 35 % (HCSF).</li>
-            <li>Cette simulation est indicative et ne remplace pas un conseil professionnel.</li>
+            <li>Scoring acheter/louer : horizon (20 pts), stabilité (15 pts), taux (15 pts), apport (15 pts), mensualité vs loyer réel (15 pts), statut & PTZ (10 pts).</li>
+            <li>Scoring neuf/ancien : budget/m², objectif, tolérance travaux, surface, horizon énergétique ou motivation qualité/DPE.</li>
+            <li>Scoring villes : budget (35 %), investissement (20 %), transports ajusté au mode choisi (20 %), qualité de vie (15 %), tension marché (10 %).</li>
+            <li>PTZ 2026 — décret n°2025-299 du 29 mars 2025 — personne seule, logement collectif neuf.</li>
+            <li>Taux d'effort max : 35 % du revenu net (recommandation HCSF). Assurance emprunteur non incluse (~0,2-0,4 %/an).</li>
+            <li>Prix IDF : données simulées indicatives 2024-2025. La simulation financière est indicative et ne remplace pas un conseil professionnel.</li>
           </ul>
         </Card>
       </div>

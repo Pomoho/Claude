@@ -34,21 +34,41 @@ model Profile {
   userId String @unique
   user   User   @relation(fields: [userId], references: [id])
 
+  // Step 1 — Personal
   age             Int?
   familySituation String?
   profession      String?
   monthlyIncome   Float?
   downPayment     Float?
-  projectType     String?
-  holdingPeriod   Int?
-  riskTolerance   String?
-  budget          Float?
-  propertyType    String?
-  desiredSurface  Float?
-  currentCity     String?
-  maxCommute      Int?
-  loanRate        Float?
-  loanDuration    Int?
+
+  // Step 2 — Current housing
+  housingStatus     String?   // tenant | owner_occupant
+  currentSurface    Float?
+  currentRent       Float?
+  currentCharges    Float?
+  ownerCopropriete  Float?
+  ownerTaxeFonciere Float?
+  currentLocation   String?
+  movingReasons     String?   // JSON-encoded string[]
+  workDistance      Float?
+  workTransport     String?   // bike | metro | car | mixed
+  rfr               Float?
+  ptzZone           String?   // A_bis | A | B1 | B2 | C
+
+  // Step 3 — Project
+  projectType   String?
+  holdingPeriod Int?
+  riskTolerance String?
+
+  // Step 4 — Preferences
+  budget         Float?
+  propertyType   String?
+  desiredSurface Float?
+  maxCommute     Int?
+
+  // Step 5 — Financing
+  loanRate     Float?
+  loanDuration Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

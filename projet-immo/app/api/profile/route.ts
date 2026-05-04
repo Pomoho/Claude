@@ -7,7 +7,15 @@ export async function GET() {
   if (!session.userId) return NextResponse.json({ error: 'Non authentifié' }, { status: 401 });
 
   const profile = await prisma.profile.findUnique({ where: { userId: session.userId } });
-  return NextResponse.json({ profile });
+  if (!profile) return NextResponse.json({ profile: null });
+
+  // Deserialize movingReasons from JSON string
+  return NextResponse.json({
+    profile: {
+      ...profile,
+      movingReasons: profile.movingReasons ? JSON.parse(profile.movingReasons) : [],
+    },
+  });
 }
 
 export async function PUT(req: NextRequest) {
@@ -16,11 +24,24 @@ export async function PUT(req: NextRequest) {
 
   const data = await req.json();
 
+  // Serialize movingReasons array to JSON string for SQLite storage
+  const serialized = {
+    ...data,
+    movingReasons: Array.isArray(data.movingReasons)
+      ? JSON.stringify(data.movingReasons)
+      : data.movingReasons ?? '[]',
+  };
+
   const profile = await prisma.profile.upsert({
     where: { userId: session.userId },
-    update: data,
-    create: { userId: session.userId, ...data },
+    update: serialized,
+    create: { userId: session.userId, ...serialized },
   });
 
-  return NextResponse.json({ profile });
+  return NextResponse.json({
+    profile: {
+      ...profile,
+      movingReasons: profile.movingReasons ? JSON.parse(profile.movingReasons) : [],
+    },
+  });
 }
