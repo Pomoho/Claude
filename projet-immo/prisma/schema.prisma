@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profile Profile?
+  tokens  Token[]
+  alerts  Alert[]
+}
+
+model Token {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  email     String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [email], references: [email])
+}
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+
+  age             Int?
+  familySituation String?
+  profession      String?
+  monthlyIncome   Float?
+  downPayment     Float?
+  projectType     String?
+  holdingPeriod   Int?
+  riskTolerance   String?
+  budget          Float?
+  propertyType    String?
+  desiredSurface  Float?
+  currentCity     String?
+  maxCommute      Int?
+  loanRate        Float?
+  loanDuration    Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Alert {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id])
+
+  title    String
+  platform String
+  url      String
+  city     String
+  budget   Float
+  surface  Float
+  type     String
+
+  createdAt DateTime @default(now())
+}
